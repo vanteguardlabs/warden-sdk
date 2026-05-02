@@ -49,17 +49,31 @@ pub struct LedgerEntry {
     pub entry_hash: String,
     #[serde(default)]
     pub correlation_id: Option<String>,
+    /// Format the row's `entry_hash` was computed under (WG-302). Old
+    /// rows don't carry the field on the wire — `default_chain_version()`
+    /// resolves it to `1`, matching what those rows were actually
+    /// written under.
+    #[serde(default = "default_chain_version")]
+    pub chain_version: i64,
+}
+
+fn default_chain_version() -> i64 {
+    1
 }
 
 /// Outcome of a chain re-hash. Mirrors `warden_ledger::VerifyResult`.
 /// `valid=false` with `first_invalid_seq=Some(n)` means the entry at
-/// `seq=n` was the first one whose hash didn't match — operationally,
-/// that's where corruption (or a chain-version mismatch) starts.
+/// `seq=n` is the first whose hash didn't match — that's a tamper.
+/// `valid=false` with `unsupported_chain_version=Some(v)` means the
+/// ledger has a row tagged with a chain version this binary doesn't
+/// know how to verify — that's an "upgrade me" signal, not a tamper.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifyResult {
     pub valid: bool,
     pub entries_checked: usize,
     pub first_invalid_seq: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsupported_chain_version: Option<i64>,
 }
 
 /// Async client for the ledger HTTP surface.
@@ -232,6 +246,29 @@ mod tests {
         });
         let parsed: LedgerEntry = serde_json::from_value(pre_correlation).unwrap();
         assert!(parsed.correlation_id.is_none());
+        // chain_version defaults to 1 when absent — pre-WG-302 rows
+        // were all written under v1.
+        assert_eq!(parsed.chain_version, 1);
+    }
+
+    #[test]
+    fn ledger_entry_carries_explicit_chain_version_when_present() {
+        let v1 = serde_json::json!({
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "timestamp": "2026-05-02T12:34:56Z",
+            "agent_id": "demo-bot",
+            "method": "tools/call",
+            "intent_category": "BenignTool",
+            "authorized": true,
+            "reasoning": "policy: allow",
+            "policy_decision": null,
+            "seq": 1,
+            "prev_hash": "0".repeat(64),
+            "entry_hash": "a".repeat(64),
+            "chain_version": 2,
+        });
+        let parsed: LedgerEntry = serde_json::from_value(v1).unwrap();
+        assert_eq!(parsed.chain_version, 2);
     }
 
     #[test]
@@ -245,6 +282,7 @@ mod tests {
         assert!(parsed.valid);
         assert_eq!(parsed.entries_checked, 47);
         assert!(parsed.first_invalid_seq.is_none());
+        assert!(parsed.unsupported_chain_version.is_none());
 
         let invalid = serde_json::json!({
             "valid": false,
@@ -254,5 +292,23 @@ mod tests {
         let parsed: VerifyResult = serde_json::from_value(invalid).unwrap();
         assert!(!parsed.valid);
         assert_eq!(parsed.first_invalid_seq, Some(7));
+    }
+
+    #[test]
+    fn verify_result_decodes_unsupported_chain_version_signal() {
+        // Server returns valid=false + unsupported_chain_version=Some
+        // when the ledger is newer than the verifier. The SDK must
+        // expose both signals so a caller can distinguish "tampered"
+        // from "upgrade me."
+        let upgrade_me = serde_json::json!({
+            "valid": false,
+            "entries_checked": 4,
+            "first_invalid_seq": null,
+            "unsupported_chain_version": 2
+        });
+        let parsed: VerifyResult = serde_json::from_value(upgrade_me).unwrap();
+        assert!(!parsed.valid);
+        assert!(parsed.first_invalid_seq.is_none());
+        assert_eq!(parsed.unsupported_chain_version, Some(2));
     }
 }
