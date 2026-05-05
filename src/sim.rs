@@ -107,6 +107,14 @@ impl SimClient {
         self
     }
 
+    /// Read-only access to the configured base URL. Mirrors
+    /// `AgentsClient::base_url` so the warden-console `/config` page
+    /// can surface the simulator's admin URL on its "Backends" card
+    /// without having to plumb the raw env var alongside the client.
+    pub fn base_url(&self) -> &Url {
+        &self.base_url
+    }
+
     /// `GET /status` — current multiplier + agent roster + stats.
     pub async fn status(&self) -> Result<SimStatus, WardenError> {
         let endpoint = self
@@ -281,6 +289,16 @@ mod tests {
         let raw = r#"{"cn": "cs-bot-1", "persona": "cs-bot", "rate_lambda": 0.3}"#;
         let parsed: SimAgentRecord = serde_json::from_str(raw).unwrap();
         assert!(!parsed.transient);
+    }
+
+    #[test]
+    fn sim_client_surfaces_configured_base_url() {
+        // The warden-console /config page renders the simulator's base
+        // URL on its "Backends (optional)" card; this getter is what
+        // the handler reads. Round-trip the URL string through the
+        // client without losing the trailing slash.
+        let client = SimClient::new("http://simulator:9100/").unwrap();
+        assert_eq!(client.base_url().as_str(), "http://simulator:9100/");
     }
 
     #[test]

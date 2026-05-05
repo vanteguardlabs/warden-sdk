@@ -266,6 +266,41 @@ impl AgentsClient {
         &self.base_url
     }
 
+    /// `true` when a bearer was attached via [`AgentsClient::with_bearer`].
+    /// Used by warden-console's `/config` page to render
+    /// `configured (sha256: ab12cd34)` vs `unset` without ever copying the
+    /// raw token into handler scope. See also [`bearer_fingerprint`].
+    ///
+    /// [`bearer_fingerprint`]: AgentsClient::bearer_fingerprint
+    pub fn has_bearer(&self) -> bool {
+        self.bearer.is_some()
+    }
+
+    /// Non-invertible presence indicator for the attached bearer.
+    /// Returns the first 8 hex characters of `sha256(token)` when a
+    /// bearer is set, or `None` when unset (so `is_some()` doubles as
+    /// the presence check — `has_bearer` is the more readable alias).
+    ///
+    /// **Redact-by-architecture.** The console renders this string
+    /// directly; the raw token never leaves the SDK. SHA-256 with a
+    /// 4-byte (8 hex char) prefix has ~4 billion possible values —
+    /// enough to fingerprint "is this the same token I configured
+    /// last week?" but not enough to recover the token itself.
+    pub fn bearer_fingerprint(&self) -> Option<String> {
+        // Manual hex format avoids pulling the `hex` crate just for
+        // 4 bytes of formatting. `sha2::Sha256::digest` returns a
+        // 32-byte `GenericArray`; we only need the first 4.
+        use sha2::{Digest, Sha256};
+        let token = self.bearer.as_ref()?;
+        let digest = Sha256::digest(token.as_bytes());
+        let mut out = String::with_capacity(8);
+        for byte in &digest[..4] {
+            use std::fmt::Write;
+            let _ = write!(out, "{byte:02x}");
+        }
+        Some(out)
+    }
+
     /// `GET /agents?tenant=<t>[&state=<s>][&owner_team=<o>]` — every
     /// agent record visible to the bearer's tenant context. Empty vec
     /// on no matches (not 404).
@@ -1248,6 +1283,61 @@ mod tests {
             "system:migration:user:alice@acme.com".starts_with(MIGRATION_ACTOR_SUB_PREFIX),
             "constant must agree with wire usage",
         );
+    }
+
+    #[test]
+    fn bearer_fingerprint_none_when_unset() {
+        let client = AgentsClient::new("http://example.test/").unwrap();
+        assert!(!client.has_bearer());
+        assert!(client.bearer_fingerprint().is_none());
+    }
+
+    #[test]
+    fn bearer_fingerprint_is_stable_and_8_hex_chars() {
+        // Stable: the same token always produces the same fingerprint.
+        // The console renders this string directly, so a non-deterministic
+        // hash would make every page-load look like a credential rotation.
+        let a = AgentsClient::new("http://example.test/")
+            .unwrap()
+            .with_bearer("dev-token");
+        let b = AgentsClient::new("http://example.test/")
+            .unwrap()
+            .with_bearer("dev-token");
+        let fa = a.bearer_fingerprint().unwrap();
+        let fb = b.bearer_fingerprint().unwrap();
+        assert_eq!(fa, fb, "fingerprint must be deterministic");
+        assert_eq!(fa.len(), 8, "8 hex chars (4 bytes of sha256)");
+        assert!(
+            fa.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "must be lowercase hex; got {fa:?}",
+        );
+        assert!(a.has_bearer());
+    }
+
+    #[test]
+    fn bearer_fingerprint_is_injective_on_different_tokens() {
+        // Two distinct tokens must produce distinct fingerprints. A
+        // collision in the wild is ~1/2^32, but the explicit assertion
+        // catches a regression like "we accidentally fingerprinted the
+        // base_url instead of the token".
+        let a = AgentsClient::new("http://example.test/")
+            .unwrap()
+            .with_bearer("token-one");
+        let b = AgentsClient::new("http://example.test/")
+            .unwrap()
+            .with_bearer("token-two");
+        assert_ne!(a.bearer_fingerprint(), b.bearer_fingerprint());
+    }
+
+    #[test]
+    fn bearer_fingerprint_known_value() {
+        // Pin the algorithm: sha256("hello").hex()[..8] == "2cf24dba".
+        // If this test ever changes, the console's "is this the same
+        // token I saw yesterday?" diagnostic becomes meaningless.
+        let client = AgentsClient::new("http://example.test/")
+            .unwrap()
+            .with_bearer("hello");
+        assert_eq!(client.bearer_fingerprint().as_deref(), Some("2cf24dba"));
     }
 
     #[test]

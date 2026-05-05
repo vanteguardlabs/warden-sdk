@@ -33,6 +33,11 @@ uuid = { version = "1", features = ["serde", "v4"] }
 # without hand-writing the impls; downstream callers get a normal Rust
 # error type that plays nicely with `?`, `anyhow`, etc.
 thiserror = "1"
+# SHA-256 for the bearer-token fingerprint helper on `AgentsClient`.
+# The console's /config page renders `configured (sha256: ab12cd34)` as
+# a non-invertible presence indicator for the operator OIDC token.
+# Same crate version as warden-ledger / warden-identity.
+sha2 = "0.10"
 
 [dev-dependencies]
 # Spin up a real HTTP server inside the integration tests so we exercise
