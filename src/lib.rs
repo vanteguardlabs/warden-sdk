@@ -72,11 +72,13 @@
 //!   constrain to that bound on builder constructors so callers can
 //!   pass either without an explicit conversion.
 
+mod agents;
 mod client;
 mod error;
 mod ledger;
 mod sim;
 
+pub use agents::{AgentListFilter, AgentRecord, AgentState, AgentsClient};
 pub use client::{Auth, WardenClient, WardenClientBuilder};
 pub use error::WardenError;
 pub use ledger::{ExportRecord, LedgerClient, LedgerEntry, VerifyResult};
