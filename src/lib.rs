@@ -81,6 +81,7 @@ mod sim;
 pub use agents::{
     create_request_matches, AgentCreated, AgentListFilter, AgentRecord, AgentState, AgentsClient,
     CreateAgentRequest, EnvelopeRequest, LifecycleRequest, LifecycleResponse,
+    MIGRATION_ACTOR_SUB_PREFIX,
 };
 pub use client::{Auth, WardenClient, WardenClientBuilder};
 pub use error::WardenError;

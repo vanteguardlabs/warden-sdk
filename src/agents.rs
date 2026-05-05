@@ -122,7 +122,20 @@ pub struct CreateAgentRequest<'a> {
     pub attestation_kinds: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<&'a str>,
+    /// Spec §7.3 / P5 migration override. The migration CLI sets this to
+    /// `system:migration:<operator_oidc_sub>` so the row's
+    /// `created_by_sub` reflects bulk-enroll instead of the operator's
+    /// own sub. Identity rejects any other prefix with
+    /// `actor_sub_prefix_not_allowed`. `skip_serializing_if = None` keeps
+    /// the wire shape identical for the common (non-migration) case.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor_sub: Option<&'a str>,
 }
+
+/// Wire constant for the migration `actor_sub` prefix — must match
+/// `warden-identity::agents::MIGRATION_ACTOR_SUB_PREFIX`. Duplicated
+/// because there's no shared crate, per CLAUDE.md repo convention.
+pub const MIGRATION_ACTOR_SUB_PREFIX: &str = "system:migration:";
 
 /// Response shape for `POST /agents`: the registered record plus the
 /// `spiffe_id_pattern` field. `flatten` mirrors the server's
@@ -1055,6 +1068,7 @@ mod tests {
             yellow_envelope: vec![],
             attestation_kinds: vec!["dev-mock".into()],
             description: Some("triage"),
+            actor_sub: None,
         };
         let created = client.create(&req).await.unwrap();
         assert_eq!(created.record.agent_name, "support-bot-3");
@@ -1078,6 +1092,7 @@ mod tests {
             yellow_envelope: vec![],
             attestation_kinds: vec![],
             description: None,
+            actor_sub: None,
         };
         let err = client.create(&req).await.unwrap_err();
         match err {
@@ -1189,6 +1204,53 @@ mod tests {
     }
 
     #[test]
+    fn create_request_serializes_migration_actor_sub_when_present() {
+        // The migration CLI sets `actor_sub` to `system:migration:<sub>`;
+        // identity validates the prefix and rejects anything else with
+        // 403 actor_sub_prefix_not_allowed. Verify the wire body
+        // round-trips the prefix byte-for-byte and skips the field for
+        // the common case so the existing `/agents` callers stay clean.
+        let mig = CreateAgentRequest {
+            tenant: "acme",
+            agent_name: "test-agent-007",
+            owner_team: "payments",
+            scope_envelope: vec!["mcp:read:tickets".into()],
+            yellow_envelope: vec![],
+            attestation_kinds: vec!["dev-mock".into()],
+            description: None,
+            actor_sub: Some("system:migration:user:alice@acme.com"),
+        };
+        let v = serde_json::to_value(&mig).unwrap();
+        assert_eq!(
+            v["actor_sub"], "system:migration:user:alice@acme.com",
+            "migration prefix should ride on the wire when set",
+        );
+
+        let plain = CreateAgentRequest {
+            tenant: "acme",
+            agent_name: "test-agent-007",
+            owner_team: "payments",
+            scope_envelope: vec!["mcp:read:tickets".into()],
+            yellow_envelope: vec![],
+            attestation_kinds: vec!["dev-mock".into()],
+            description: None,
+            actor_sub: None,
+        };
+        let v = serde_json::to_value(&plain).unwrap();
+        assert!(
+            v.get("actor_sub").is_none(),
+            "actor_sub must be omitted when None — keep the wire shape \
+             identical for the common case",
+        );
+
+        // Spot-check the constant matches the prefix the test wrote.
+        assert!(
+            "system:migration:user:alice@acme.com".starts_with(MIGRATION_ACTOR_SUB_PREFIX),
+            "constant must agree with wire usage",
+        );
+    }
+
+    #[test]
     fn create_request_matches_is_set_insensitive() {
         let record = fixture_record("support-bot-3");
         // Same envelopes in different orders → match.
@@ -1200,6 +1262,7 @@ mod tests {
             yellow_envelope: vec!["refund:<=50usd".into()],
             attestation_kinds: vec!["dev-mock".into()],
             description: None,
+            actor_sub: None,
         };
         assert!(create_request_matches(&req, &record));
 
@@ -1216,6 +1279,7 @@ mod tests {
             yellow_envelope: vec!["refund:<=50usd".into()],
             attestation_kinds: vec!["dev-mock".into()],
             description: Some("ignored field"),
+            actor_sub: None,
         };
         assert!(create_request_matches(&req, &record));
 
@@ -1228,6 +1292,7 @@ mod tests {
             yellow_envelope: vec!["refund:<=50usd".into()],
             attestation_kinds: vec!["dev-mock".into()],
             description: None,
+            actor_sub: None,
         };
         assert!(!create_request_matches(&req, &record));
 
@@ -1240,6 +1305,7 @@ mod tests {
             yellow_envelope: vec!["refund:<=50usd".into()],
             attestation_kinds: vec!["dev-mock".into()],
             description: None,
+            actor_sub: None,
         };
         assert!(!create_request_matches(&req, &record));
     }
