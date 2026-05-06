@@ -123,6 +123,20 @@ pub struct LedgerEntry {
     /// v2 — SPIFFE id of the agent that produced this row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_spiffe: Option<String>,
+    /// E1 — per-decision approver claim. JSON-encoded blob whose
+    /// shape varies by mode (see
+    /// `warden_ledger::LedgerEntry::approver_assertion`):
+    ///
+    /// - WebAuthn: `{"method":"webauthn","credential_id":"…","iat":…}`
+    /// - OIDC: `{"method":"oidc-session","sub":"…","iat":…}`
+    /// - Basic: `{"method":"basic-admin","username":"…"}`
+    ///
+    /// `None` on rows that aren't HIL state-transitions and on
+    /// pre-E1 rows. Surfaced verbatim — consumers display alongside
+    /// `decided_by` for the richer "who" claim. Excluded from chain
+    /// hashing; the field is metadata, not an integrity primitive.
+    #[serde(default)]
+    pub approver_assertion: Option<String>,
 }
 
 /// Lifecycle row + the per-event-kind payload bytes that the chain
