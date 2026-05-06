@@ -85,5 +85,7 @@ pub use agents::{
 };
 pub use client::{Auth, WardenClient, WardenClientBuilder};
 pub use error::WardenError;
-pub use ledger::{ExportRecord, LedgerClient, LedgerEntry, LifecycleRow, VerifyResult};
+pub use ledger::{
+    ExportRecord, LedgerClient, LedgerEntry, LifecycleRow, RegulatoryExportOptions, VerifyResult,
+};
 pub use sim::{SimAgentRecord, SimClient, SimStats, SimStatus};

@@ -196,6 +196,26 @@ pub struct VerifyResult {
     pub unsupported_chain_version: Option<i64>,
 }
 
+/// Per-call options for [`LedgerClient::regulatory_export`]. Boxed up
+/// so adding a future slice 4+ field is non-breaking. Defaults to "no
+/// readme, no exports" — i.e. the slice 1+2 shape.
+#[derive(Debug, Clone, Default)]
+pub struct RegulatoryExportOptions {
+    /// Operator-supplied technical-documentation markdown. When
+    /// `Some(bytes)`, the SDK uploads the bytes verbatim as the
+    /// request body with `Content-Type: text/markdown`; the ledger
+    /// embeds them as `technical_documentation.md` inside the
+    /// bundle and commits to their sha256 + size in the manifest.
+    /// The ledger caps the body at 1 MiB (413 above).
+    pub readme: Option<Vec<u8>>,
+    /// When `true`, the ledger scans its `exports` table and embeds
+    /// Parquet pointers whose seq range overlaps the regulatory
+    /// window. Empty pointers (no exports configured / no overlap)
+    /// still serialize as an empty array on the wire so an auditor
+    /// can distinguish "no overlap" from "didn't ask."
+    pub include_exports: bool,
+}
+
 /// Async client for the ledger HTTP surface.
 ///
 /// Cheap to clone (the inner `reqwest::Client` is `Arc`-based).
@@ -347,6 +367,71 @@ impl LedgerClient {
     /// is typically a small bookkeeping table.
     pub async fn list_exports(&self) -> Result<Vec<ExportRecord>, WardenError> {
         self.get_json("exports").await
+    }
+
+    /// `POST /export/regulatory?from=…&to=…[&include_exports=true]` —
+    /// produce a regulatory `.tar.gz` for the half-open time window
+    /// `[from, to)`. Returns the raw bundle bytes. The bundle layout
+    /// and auditor verification recipe live in
+    /// `warden-ledger/src/regulatory.rs`. Manifest schema v3 ships
+    /// chain rows plus optional operator prose, optional Parquet
+    /// pointers, and an optional ed25519 detached signature.
+    ///
+    /// `opts.readme` (optional) is the operator-supplied prose
+    /// embedded as `technical_documentation.md`. The SDK uploads it
+    /// with `Content-Type: text/markdown`; the ledger commits to the
+    /// bytes' sha256 in the manifest. Capped at 1 MiB by the server
+    /// (the ledger refuses larger bodies with 413).
+    ///
+    /// `opts.include_exports` (optional, defaults false) tells the
+    /// ledger to scan its `exports` table and embed Parquet pointers
+    /// whose seq range overlaps the window. Pointers are descriptive
+    /// — the bundle is self-contained without them.
+    ///
+    /// The half-open semantics, error-status mapping (400 inverted,
+    /// 413 oversize, 503 signing-unavailable), and signature recipe
+    /// match the ledger's surface 1:1.
+    pub async fn regulatory_export(
+        &self,
+        from: &chrono::DateTime<chrono::Utc>,
+        to: &chrono::DateTime<chrono::Utc>,
+        opts: RegulatoryExportOptions,
+    ) -> Result<Vec<u8>, WardenError> {
+        // RFC 3339 on both bounds — same format the ledger uses for
+        // chain timestamps. `to_rfc3339_opts` with `SecondsFormat::Secs`
+        // produces a stable shape across hosts.
+        let from_str = from.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let to_str = to.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let mut path = format!(
+            "export/regulatory?from={}&to={}",
+            percent_encode(&from_str),
+            percent_encode(&to_str),
+        );
+        if opts.include_exports {
+            path.push_str("&include_exports=true");
+        }
+        let endpoint = self
+            .base_url
+            .join(&path)
+            .map_err(|e| WardenError::InvalidConfig(format!("join {path}: {e}")))?;
+        let mut req = self.http.post(endpoint);
+        if let Some(readme) = opts.readme {
+            // text/markdown is the canonical content-type for `.md`
+            // bodies (RFC 7763). The ledger accepts any `text/*`,
+            // including `text/plain`, but markdown is the intended
+            // shape and the ctl CLI wraps a `.md` file path.
+            req = req
+                .header(reqwest::header::CONTENT_TYPE, "text/markdown")
+                .body(readme);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(WardenError::Server { status, body });
+        }
+        let bytes = resp.bytes().await?;
+        Ok(bytes.to_vec())
     }
 
     /// Internal: GET `<base_url>/<path>` and decode JSON. Returns
@@ -672,6 +757,153 @@ mod tests {
         assert_eq!(rows[0].entry.event_kind.as_deref(), Some("agent.registered"));
         assert_eq!(rows[1].entry.event_kind.as_deref(), Some("agent.suspended"));
         assert_eq!(rows[1].payload.as_ref().unwrap()["state_after"], "suspended");
+        let _ = kill_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn regulatory_export_threads_query_params_and_optional_readme() {
+        // Mock the ledger handler. Captures the request — the body
+        // bytes we got, content-type header, and query string — into
+        // an Arc<Mutex> the test reads after the call. The handler
+        // returns a deterministic .tar.gz-shaped placeholder.
+        use axum::extract::Query;
+        use axum::http::{HeaderMap, StatusCode};
+        use axum::{routing::post, Router};
+        use std::sync::{Arc, Mutex};
+        use tokio::sync::oneshot;
+
+        #[derive(Default, Clone, Debug)]
+        struct Captured {
+            from: String,
+            to: String,
+            include_exports: Option<String>,
+            content_type: Option<String>,
+            body_len: usize,
+        }
+        let captured: Arc<Mutex<Captured>> = Arc::new(Mutex::new(Captured::default()));
+        let captured_for_handler = captured.clone();
+
+        let app = Router::new().route(
+            "/export/regulatory",
+            post(
+                move |Query(q): Query<std::collections::HashMap<String, String>>,
+                      headers: HeaderMap,
+                      body: axum::body::Bytes| {
+                    let captured = captured_for_handler.clone();
+                    async move {
+                        let mut c = captured.lock().unwrap();
+                        c.from = q.get("from").cloned().unwrap_or_default();
+                        c.to = q.get("to").cloned().unwrap_or_default();
+                        c.include_exports = q.get("include_exports").cloned();
+                        c.content_type = headers
+                            .get("content-type")
+                            .and_then(|v| v.to_str().ok())
+                            .map(|s| s.to_string());
+                        c.body_len = body.len();
+                        // 8-byte placeholder gzip-magic-prefix shape
+                        // (real bundle bytes; the SDK doesn't decode).
+                        let placeholder = vec![
+                            0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00,
+                        ];
+                        (StatusCode::OK, placeholder)
+                    }
+                },
+            ),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (kill_tx, kill_rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = kill_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let client = LedgerClient::new(format!("http://{addr}/")).unwrap();
+        let from = chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let to = chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_010_000, 0).unwrap();
+
+        // Path A: no readme, no include_exports → minimal request.
+        let bytes = client
+            .regulatory_export(&from, &to, RegulatoryExportOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(bytes.len(), 8, "placeholder bundle bytes returned verbatim");
+        {
+            let c = captured.lock().unwrap();
+            assert!(c.from.starts_with("2023-"));
+            assert!(c.to.starts_with("2023-"));
+            assert!(c.include_exports.is_none());
+            assert!(c.content_type.is_none() || c.body_len == 0);
+            assert_eq!(c.body_len, 0, "no readme → empty body");
+        }
+
+        // Path B: readme + include_exports → body, header, query flag.
+        let prose = b"# Warden\n\nProse here.\n";
+        let _ = client
+            .regulatory_export(
+                &from,
+                &to,
+                RegulatoryExportOptions {
+                    readme: Some(prose.to_vec()),
+                    include_exports: true,
+                },
+            )
+            .await
+            .unwrap();
+        {
+            let c = captured.lock().unwrap();
+            assert_eq!(c.include_exports.as_deref(), Some("true"));
+            assert_eq!(c.content_type.as_deref(), Some("text/markdown"));
+            assert_eq!(c.body_len, prose.len());
+        }
+
+        let _ = kill_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn regulatory_export_propagates_4xx_as_server_error() {
+        // A 400 / 413 from the ledger lands as `WardenError::Server`
+        // with the status preserved. Lets ctl distinguish "operator
+        // misuse" (validation, payload too large) from transport.
+        use axum::http::StatusCode;
+        use axum::{routing::post, Router};
+        use tokio::sync::oneshot;
+
+        let app = Router::new().route(
+            "/export/regulatory",
+            post(|| async { (StatusCode::PAYLOAD_TOO_LARGE, "readme too big") }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (kill_tx, kill_rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = kill_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let client = LedgerClient::new(format!("http://{addr}/")).unwrap();
+        let from = chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let to = chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_010_000, 0).unwrap();
+        let err = client
+            .regulatory_export(&from, &to, RegulatoryExportOptions::default())
+            .await
+            .expect_err("413 must surface as WardenError::Server");
+        match err {
+            WardenError::Server { status, body } => {
+                assert_eq!(status, reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+                assert!(body.contains("too big"));
+            }
+            other => panic!("expected WardenError::Server, got {other:?}"),
+        }
         let _ = kill_tx.send(());
     }
 }
