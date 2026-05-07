@@ -2,7 +2,7 @@
 //!
 //! Mirrors the `warden-identity` server-side handlers in
 //! `agents.rs`: every call here corresponds 1:1 with a route there.
-//! P2 ships the full lifecycle surface — `list`, `get`, `create`,
+//! Ships the full lifecycle surface — `list`, `get`, `create`,
 //! `suspend` / `unsuspend` / `decommission`, `envelope_narrow` /
 //! `envelope_widen`, `attestation_kinds`, `transfer_owner_team`,
 //! `set_description`, plus the helper `find_by_name` used by
@@ -122,7 +122,7 @@ pub struct CreateAgentRequest<'a> {
     pub attestation_kinds: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<&'a str>,
-    /// Spec §7.3 / P5 migration override. The migration CLI sets this to
+    /// Spec §7.3 migration override. The migration CLI sets this to
     /// `system:migration:<operator_oidc_sub>` so the row's
     /// `created_by_sub` reflects bulk-enroll instead of the operator's
     /// own sub. Identity rejects any other prefix with
@@ -827,7 +827,7 @@ mod tests {
         );
     }
 
-    // ── P2: write-surface mock-server tests ──────────────────────────
+    // ── write-surface mock-server tests ──────────────────────────
 
     /// Mutable mock state — the write tests need to POST and read
     /// back. Wraps a `Mutex<Vec<AgentRecord>>` so the mock stays

@@ -75,7 +75,7 @@ pub struct LedgerEntry {
     /// a security claim — see the warning in `warden_ledger`.
     #[serde(default)]
     pub source: Option<String>,
-    /// P4 rejection / annotation signal (ONBOARDING.md §6.3 vocabulary):
+    /// Rejection / annotation signal (ONBOARDING.md §6.3 vocabulary):
     /// `unregistered_agent`, `scope_outside_envelope`,
     /// `yellow_scope_outside_envelope`, `agent_suspended`,
     /// `agent_decommissioned`, `attestation_kind_not_accepted`,
@@ -110,7 +110,7 @@ pub struct LedgerEntry {
     pub payload_sha256: Option<String>,
     /// Warden-issued signature over the v2 hashable. Carried as the
     /// Vault Transit envelope (`vault:v<N>:<base64>`); the verifier
-    /// (P3 #14) parses the envelope and checks against the JWKS-served
+    /// parses the envelope and checks against the JWKS-served
     /// public key for `key_id`. Hashable on v2 — tampering with the
     /// signature itself breaks the chain hash, so an attacker can't
     /// strip the signature without invalidating the row. Also set on
@@ -123,7 +123,7 @@ pub struct LedgerEntry {
     /// v2 — SPIFFE id of the agent that produced this row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_spiffe: Option<String>,
-    /// E1 — per-decision approver claim. JSON-encoded blob whose
+    /// Per-decision approver claim. JSON-encoded blob whose
     /// shape varies by mode (see
     /// `warden_ledger::LedgerEntry::approver_assertion`):
     ///
@@ -132,7 +132,7 @@ pub struct LedgerEntry {
     /// - Basic: `{"method":"basic-admin","username":"…"}`
     ///
     /// `None` on rows that aren't HIL state-transitions and on
-    /// pre-E1 rows. Surfaced verbatim — consumers display alongside
+    /// legacy rows. Surfaced verbatim — consumers display alongside
     /// `decided_by` for the richer "who" claim. Excluded from chain
     /// hashing; the field is metadata, not an integrity primitive.
     #[serde(default)]
