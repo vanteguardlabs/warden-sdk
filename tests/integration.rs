@@ -410,3 +410,150 @@ async fn list_exports_decodes_export_records() {
     assert_eq!(rows[1].row_count, 50);
     drop(shutdown);
 }
+
+// ── PoliciesClient (warden-specs/TECH_SPEC.md
+//    #console-policy-management) ───────────────────────────────────────
+
+#[tokio::test]
+async fn policies_list_decodes_into_typed_rows() {
+    use warden_sdk::PoliciesClient;
+    let app = Router::new().route(
+        "/policies",
+        get(|| async {
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "policies": [
+                        {
+                            "name": "governance.rego",
+                            "content_type": "rego",
+                            "active": true,
+                            "current_version": 3,
+                            "deleted_at": null,
+                            "created_at": "2026-05-08T00:00:00Z",
+                            "updated_at": "2026-05-08T01:00:00Z"
+                        },
+                        {
+                            "name": "attestation_allowlist.json",
+                            "content_type": "json",
+                            "active": true,
+                            "current_version": 1,
+                            "deleted_at": null,
+                            "created_at": "2026-05-08T00:00:00Z",
+                            "updated_at": "2026-05-08T00:00:00Z"
+                        }
+                    ]
+                })),
+            )
+                .into_response()
+        }),
+    );
+    let (url, shutdown) = spawn(app).await;
+    let client = PoliciesClient::new(&url).unwrap();
+    let rows = client.list(false).await.expect("list");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].name, "governance.rego");
+    assert_eq!(rows[0].current_version, 3);
+    assert_eq!(rows[1].content_type, "json");
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn policies_create_round_trips_typed_request_and_response() {
+    use warden_sdk::{CreatePolicyRequest, PoliciesClient};
+    let app = Router::new().route(
+        "/policies",
+        post(|Json(body): Json<Value>| async move {
+            // Assert the SDK serialised every field correctly so a
+            // future server-side rename surfaces here.
+            assert_eq!(body["name"], "extra.rego");
+            assert_eq!(body["content_type"], "rego");
+            assert_eq!(body["reason"], "test");
+            assert_eq!(body["actor_sub"], "alice");
+            assert_eq!(body["actor_idp"], "oidc:test");
+            (
+                StatusCode::CREATED,
+                Json(json!({
+                    "name": "extra.rego",
+                    "version": 1,
+                    "body_sha256": "deadbeef",
+                    "current_version": 1,
+                    "active": true,
+                    "event_kind": "policy.created"
+                })),
+            )
+                .into_response()
+        }),
+    );
+    let (url, shutdown) = spawn(app).await;
+    let client = PoliciesClient::new(&url).unwrap();
+    let resp = client
+        .create(&CreatePolicyRequest {
+            name: "extra.rego",
+            content_type: "rego",
+            body: "package warden.authz\nimport rego.v1\ndefault allow := false",
+            reason: "test",
+            actor_sub: "alice",
+            actor_idp: "oidc:test",
+        })
+        .await
+        .expect("create");
+    assert_eq!(resp.event_kind, "policy.created");
+    assert_eq!(resp.version, 1);
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn policies_update_409_carries_conflict_response() {
+    use warden_sdk::{PoliciesClient, UpdatePolicyRequest};
+    let app = Router::new().route(
+        "/policies/{name}",
+        axum::routing::put(|Path(_n): Path<String>| async {
+            (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "version_conflict",
+                    "policy": {
+                        "name": "governance.rego",
+                        "content_type": "rego",
+                        "active": true,
+                        "current_version": 7,
+                        "deleted_at": null,
+                        "created_at": "2026-05-08T00:00:00Z",
+                        "updated_at": "2026-05-08T05:00:00Z"
+                    }
+                })),
+            )
+                .into_response()
+        }),
+    );
+    let (url, shutdown) = spawn(app).await;
+    let client = PoliciesClient::new(&url).unwrap();
+    // `WardenClient` doesn't impl `Debug`, so `expect_err` would
+    // need a `Debug` bound on the success arm. The `match` form is
+    // both `Debug`-free and clippy-happy.
+    let result = client
+        .update(
+            "governance.rego",
+            &UpdatePolicyRequest {
+                body: "package warden.authz\ndefault allow := false",
+                reason: "test",
+                actor_sub: "alice",
+                actor_idp: "oidc:test",
+                expected_current_version: 1,
+            },
+        )
+        .await;
+    let err = match result {
+        Ok(_) => panic!("expected 409"),
+        Err(e) => e,
+    };
+    let WardenError::Server { status, body } = err else {
+        panic!("expected Server, got {err}");
+    };
+    assert_eq!(status, StatusCode::CONFLICT);
+    let conflict = PoliciesClient::parse_conflict(&body).expect("parse_conflict");
+    assert_eq!(conflict.error, "version_conflict");
+    assert_eq!(conflict.policy.current_version, 7);
+    drop(shutdown);
+}

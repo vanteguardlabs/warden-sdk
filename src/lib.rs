@@ -76,6 +76,7 @@ mod agents;
 mod client;
 mod error;
 mod ledger;
+mod policies;
 mod sim;
 
 pub use agents::{
@@ -87,5 +88,10 @@ pub use client::{Auth, WardenClient, WardenClientBuilder};
 pub use error::WardenError;
 pub use ledger::{
     ExportRecord, LedgerClient, LedgerEntry, LifecycleRow, RegulatoryExportOptions, VerifyResult,
+};
+pub use policies::{
+    ConflictResponse, CreatePolicyRequest, DiffResponse, MutationResponse, PoliciesClient,
+    PoliciesListResponse, PolicyDetail, PolicyRow, PolicyVersionRow, RollbackRequest,
+    StateChangeRequest, UpdatePolicyRequest, VersionsListResponse,
 };
 pub use sim::{SimAgentRecord, SimClient, SimStats, SimStatus};
