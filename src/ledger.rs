@@ -22,17 +22,6 @@
 //!   snapshots written so far (Parquet + manifest pointers). The
 //!   console renders this as a browse-able table so operators don't
 //!   have to `curl` the ledger directly.
-//!
-//! # Rust idioms in this file (additions to lib.rs's list)
-//!
-//! * `Vec<T>` + `Json<Vec<T>>` server-side maps to `serde_json` decode
-//!   on a `Vec<T>` here — no special handling for the array shape.
-//! * `chrono::serde` brings the `DateTime<Utc>` (de)serializer into
-//!   scope automatically because we enabled the `serde` feature in
-//!   `Cargo.toml`. The wire shape is the standard ISO-8601 `chrono`
-//!   default — same as warden-ledger's own `LedgerEntry`.
-//! * `Uuid` deserializes from the canonical hyphenated form by default
-//!   (e.g. `"3f4b...8c"`), matching what the server emits.
 
 use chrono::{DateTime, Utc};
 use reqwest::{Client, StatusCode, Url};

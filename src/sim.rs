@@ -16,14 +16,6 @@
 //! as the CA-private-key bind mount. The console relies on network
 //! isolation (compose internal network) for access control. **Do not
 //! deploy this client against a production simulator.**
-//!
-//! # Rust idioms in this file (additions to lib.rs's list)
-//!
-//! * `serde_json::to_value(&body)` is unused here — we send via
-//!   `.json(&body)` so reqwest does the encode in one pass.
-//! * The status struct is `#[derive(Deserialize, Serialize)]` because
-//!   the console re-emits it as JSON in some integrations. Same
-//!   pattern as `LedgerEntry`.
 
 use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};

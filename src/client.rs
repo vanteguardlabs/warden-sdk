@@ -8,25 +8,6 @@
 //!   403, or one of the other [`WardenError`] arms.
 //! * [`WardenClient::send_jsonrpc`] — escape hatch for non-tool
 //!   methods (`tools/list`, etc.). Same return semantics.
-//!
-//! # Rust idioms in this file (additions to lib.rs's list)
-//!
-//! * `#[derive(Clone)]` on `WardenClient` is cheap — `reqwest::Client`
-//!   is internally `Arc`, `Url` is small, `Auth` is at most an owned
-//!   `String`. Cloning a client to hand to a tokio task is the
-//!   ordinary pattern.
-//! * `serde_json::json!` is a quasi-quote macro — `json!({"k": v})`
-//!   builds a `serde_json::Value` at runtime with the literal shape.
-//!   Used here for request bodies so we don't need a separate `struct`
-//!   for every JSON-RPC request shape.
-//! * `String` vs `&str` on builder methods: we take `String` (by value)
-//!   on `auth(Auth::Bearer)` because the token has to outlive the
-//!   client anyway and forcing the caller to clone an owned `String`
-//!   would be wasteful. We take `&str` on URL-ish inputs and parse to
-//!   `Url` ourselves.
-//! * `static` atomic counter for JSON-RPC `id` field: each request
-//!   gets a unique numeric id without the caller having to thread one
-//!   through. JSON-RPC requires `id` to be set on every request.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -61,10 +42,6 @@ pub struct WardenClient {
     base_url: Url,
     auth: Auth,
     http: Client,
-    // Monotonic JSON-RPC id source. `Arc<AtomicU64>` would be needed
-    // if the counter had to outlive the client — but every clone of
-    // `WardenClient` carries a fresh counter, which is fine for the
-    // contract (ids only have to be unique per request, not globally).
     next_id: std::sync::Arc<AtomicU64>,
 }
 

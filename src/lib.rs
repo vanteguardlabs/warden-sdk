@@ -42,35 +42,6 @@
 //! }
 //! # Ok(()) }
 //! ```
-//!
-//! # Rust idioms in this crate
-//!
-//! Annotations for readers coming from other languages:
-//!
-//! * `pub use foo::{Bar, Baz};` re-exports nested-module items at the
-//!   crate root so callers write `warden_sdk::Bar` instead of
-//!   `warden_sdk::foo::Bar`.
-//! * `#[derive(thiserror::Error, Debug)]` auto-implements
-//!   `std::error::Error` and `Display` — the `#[error("...")]`
-//!   attribute on each variant is the Display string.
-//! * `#[non_exhaustive]` on a public enum reserves the right to add
-//!   variants in a future minor without it being a breaking change.
-//!   Callers that `match` exhaustively must include `_ => ...`.
-//! * `impl From<reqwest::Error> for WardenError` enables `?` to convert
-//!   transport errors into our crate-level error transparently.
-//! * `serde_json::Value` is the open-content escape hatch — used here
-//!   for upstream responses (whose shape we deliberately don't model)
-//!   and for `policy_decision`, which the server stores as nullable
-//!   JSON.
-//! * `chrono::DateTime<Utc>` with the `serde` feature deserializes
-//!   from the ISO-8601 string the ledger emits, identical to the
-//!   server's own `LedgerEntry`.
-//! * Builder pattern: `Client::builder(url)?.auth(...).build()?`.
-//!   Two-step construction lets us validate the URL once and surface
-//!   misuse (auth on a bad URL) before any network call.
-//! * `IntoUrl` (a reqwest trait) accepts both `&str` and `Url`; we
-//!   constrain to that bound on builder constructors so callers can
-//!   pass either without an explicit conversion.
 
 mod agents;
 mod client;

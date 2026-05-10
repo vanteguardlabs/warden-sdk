@@ -14,37 +14,23 @@ name = "warden_sdk"
 path = "src/lib.rs"
 
 [dependencies]
-# Async HTTP client. rustls-tls (not native-tls) so a downstream
-# `cargo install` on a fresh box doesn't need a system openssl, and
-# `json` for ergonomic body posting / response decoding. Same combo as
-# warden-lite.
+# rustls-tls (not native-tls) so a downstream `cargo install` on a fresh
+# box doesn't need a system openssl. Same combo as warden-lite.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-# `Url` ensures we reject malformed base URLs at construction time
-# rather than failing on the first request.
 url = "2.5"
-# Serde + JSON for wire types. `chrono` with serde for `LedgerEntry`'s
-# timestamp (mirrors warden-ledger's choice).
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
-# UUID for `LedgerEntry.id` — mirrors warden-ledger.
 uuid = { version = "1", features = ["serde", "v4"] }
-# Error type. `thiserror` lets us derive `std::error::Error` + `Display`
-# without hand-writing the impls; downstream callers get a normal Rust
-# error type that plays nicely with `?`, `anyhow`, etc.
 thiserror = "1"
-# SHA-256 for the bearer-token fingerprint helper on `AgentsClient`.
-# The console's /config page renders `configured (sha256: ab12cd34)` as
-# a non-invertible presence indicator for the operator OIDC token.
-# Same crate version as warden-ledger / warden-identity.
+# SHA-256 for the bearer-token fingerprint on `AgentsClient`. The
+# console's /config page renders `configured (sha256: ab12cd34)` as a
+# non-invertible presence indicator for the operator OIDC token.
 sha2 = "0.10"
 
 [dev-dependencies]
-# Spin up a real HTTP server inside the integration tests so we exercise
-# the full reqwest -> response decoder path, not a mock at the trait
-# layer. axum 0.8 to match warden-ledger (whose endpoints are what
-# `LedgerClient` mirrors); the `{param}` capture syntax in test routes
-# is 0.8-only (0.7 used `:param`).
+# axum 0.8 (not 0.7) — the `{param}` capture syntax in test routes is
+# 0.8-only (0.7 used `:param`).
 axum = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 serde_json = "1"

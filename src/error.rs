@@ -5,17 +5,6 @@
 //! "anything else from the server" — plus an explicit `Decode` arm for
 //! cases where the server returned a status we expect to be parseable
 //! but the body wasn't.
-//!
-//! # Rust idioms in this file (additions to lib.rs's list)
-//!
-//! * `#[from]` on a thiserror variant lets `?` auto-convert the source
-//!   type into this enum. We use it for `reqwest::Error` and
-//!   `serde_json::Error` so caller code can `let body: T = resp.json().await?;`
-//!   inside an `async fn` returning `Result<_, WardenError>` without an
-//!   explicit `.map_err(...)`.
-//! * `#[error(transparent)]` forwards the source's Display unchanged —
-//!   right for transport/decode errors where adding our own prefix
-//!   would just duplicate the underlying message.
 
 use thiserror::Error;
 
