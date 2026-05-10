@@ -19,9 +19,16 @@ full Agent Warden control plane for production.
 | Type                    | Wraps                                      | Returns                                                                  |
 |-------------------------|--------------------------------------------|--------------------------------------------------------------------------|
 | `WardenClient`          | `POST /mcp` on warden-lite or warden-proxy | upstream JSON on 200, `WardenError::Veto` on 403                         |
-| `LedgerClient`          | ledger HTTP API                            | `Vec<LedgerEntry>` from `/audit/...`, `VerifyResult` from `/verify`      |
+| `LedgerClient`          | warden-ledger HTTP API                     | typed `LedgerEntry`, `LifecycleRow`, `VerifyResult`, `ExportRecord`, regulatory bundle bytes |
+| `AgentsClient`          | warden-identity `/agents` lifecycle surface | typed `AgentRecord`, `AgentCreated`, `LifecycleResponse`; full CRUD + state-machine transitions |
+| `PoliciesClient`        | warden-policy-engine console-policy mgmt   | typed `PolicyRow` / `PolicyVersionRow` / `PolicyDetail` / `MutationResponse` |
+| `SimClient`             | warden-simulator admin HTTP                | typed `SimStatus`, `SimAgentRecord`, `SimStats` (dev-only — no auth)     |
 | `WardenError::Veto`     | structured 403 body (or plain-text fallback) | `intent_category`, `reasons`, `review_reasons`, `raw`                    |
-| `Auth`                  | client construction                        | `None` (open access) or `Bearer(String)`. mTLS / OIDC / SPIFFE: see roadmap |
+| `Auth`                  | `WardenClient` construction                | `None` (open access) or `Bearer(String)`. mTLS / OIDC / SPIFFE: see roadmap |
+
+A path prefix on the base URL is preserved across every client — pass
+`http://gateway/warden` and requests land at `http://gateway/warden/mcp`
+etc. Trailing slash optional; the SDK normalizes either form.
 
 ## Quick start
 
@@ -73,6 +80,58 @@ let v = ledger.verify().await?;
 assert!(v.valid, "chain corrupted at seq {:?}", v.first_invalid_seq);
 ```
 
+`LedgerClient` covers the full audit surface — beyond the
+`audit_correlation` / `verify` shown above:
+
+- `audit_agent` / `audit_agent_paged` / `audit_agent_count` — per-CN
+  rows, ASC-full or newest-first paged.
+- `lifecycle_for_agent(tenant, agent_id)` — chain-v3 lifecycle rows
+  for a registered agent, joined with the per-event payload bytes.
+- `list_agents` — distinct CNs that have ever logged a verdict.
+- `list_exports` — cold-tier Parquet snapshot bookkeeping.
+- `regulatory_export(from, to, opts)` — produce a regulatory `.tar.gz`
+  bundle for a half-open time window with optional operator markdown
+  and Parquet pointers.
+
+## Agents, policies, simulator
+
+The same crate ships typed clients for the rest of the warden control
+plane so an integrator doesn't have to roll a fresh client per service:
+
+```rust
+use warden_sdk::{AgentsClient, AgentListFilter, AgentState, CreateAgentRequest};
+
+let agents = AgentsClient::new("http://identity:8086")?
+    .with_bearer(oidc_id_token);
+let rows = agents
+    .list("acme", AgentListFilter { state: Some(AgentState::Active), owner_team: None })
+    .await?;
+
+let created = agents.create(&CreateAgentRequest {
+    tenant: "acme",
+    agent_name: "support-bot-3",
+    owner_team: "payments",
+    scope_envelope: vec!["mcp:read:tickets".into()],
+    yellow_envelope: vec![],
+    attestation_kinds: vec!["dev-mock".into()],
+    description: Some("triage queue"),
+    actor_sub: None,
+}).await?;
+
+agents.suspend(&created.record.id, "acme", Some("incident #4172")).await?;
+```
+
+`PoliciesClient` wraps `warden-policy-engine`'s
+console-policy-management surface (list / get / create / update /
+activate / deactivate / delete / rollback / diff). 409s on mutations
+carry a typed `ConflictResponse` — recover the up-to-date row via
+`PoliciesClient::parse_conflict(&body)`.
+
+`SimClient` wraps the simulator's dev-only admin surface (`/status`,
+`/multiplier`, `/running`, `/auto-decide`, `/agents`). No auth — the
+simulator's admin port is meant to live on an internal compose
+network, never exposed to the public.
+
 ## Error model
 
 `WardenError` distinguishes the four wire outcomes a caller actually
@@ -113,7 +172,15 @@ otherwise), and always log `raw`.
 | SDK type               | Server-side source                                   |
 |------------------------|------------------------------------------------------|
 | `LedgerEntry`          | `warden_ledger::LedgerEntry`                         |
+| `LifecycleRow`         | `warden_ledger::LifecycleRow` (chain v3 + payload)   |
 | `VerifyResult`         | `warden_ledger::VerifyResult`                        |
+| `ExportRecord`         | `warden_ledger::export::ExportRecord`                |
+| `AgentRecord`          | `warden_identity::agents::AgentRecord`               |
+| `AgentCreated`         | `warden_identity::agents::CreateAgentResponse`       |
+| `PolicyRow` / `PolicyVersionRow`             | `warden_policy_engine::storage::*`         |
+| `PolicyDetail`                               | `warden_policy_engine::read_api::PolicyDetailResponse` |
+| `MutationResponse`                           | `warden_policy_engine::write_api::MutationResponse`    |
+| `SimStatus` / `SimStats` / `SimAgentRecord`  | `warden_simulator::admin::{StatusResponse, StatsView, AgentRecord}` |
 | `WardenError::Veto`    | `warden_lite::proxy::DenyResponse` (JSON 403)        |
 | Request body shape     | JSON-RPC 2.0; `tools/call` with `params.{name,arguments}` |
 
