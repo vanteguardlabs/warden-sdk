@@ -23,13 +23,15 @@
 //!   console renders this as a browse-able table so operators don't
 //!   have to `curl` the ledger directly.
 
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::WardenError;
-use crate::http::{parse_base_url, percent_encode};
+use crate::http::{default_provider, parse_base_url, percent_encode, HttpProvider, StaticHttpClient};
 
 /// One row from the ledger's hash chain. Fields and ordering mirror
 /// the server-side `warden_ledger::LedgerEntry`. `correlation_id` is
@@ -208,11 +210,11 @@ pub struct RegulatoryExportOptions {
 
 /// Async client for the ledger HTTP surface.
 ///
-/// Cheap to clone (the inner `reqwest::Client` is `Arc`-based).
+/// Cheap to clone — the inner `Arc<dyn HttpProvider>` is `Arc`-based.
 #[derive(Debug, Clone)]
 pub struct LedgerClient {
     base_url: Url,
-    http: Client,
+    http: Arc<dyn HttpProvider>,
 }
 
 impl LedgerClient {
@@ -220,14 +222,24 @@ impl LedgerClient {
     /// Returns `InvalidConfig` if the URL is malformed.
     pub fn new(base_url: impl AsRef<str>) -> Result<Self, WardenError> {
         let url = parse_base_url(base_url.as_ref())?;
-        let http = Client::builder().build().map_err(WardenError::Transport)?;
+        let http = default_provider()?;
         Ok(Self { base_url: url, http })
     }
 
-    /// Inject a pre-configured `reqwest::Client`. Same use case as
-    /// `WardenClientBuilder::http_client`.
-    pub fn with_http_client(mut self, client: Client) -> Self {
-        self.http = client;
+    /// Inject a pre-configured `reqwest::Client`. Wraps it in a
+    /// [`StaticHttpClient`] so the per-request hot path stays uniform
+    /// — same cost as caching a `Client`, no rebuild per call.
+    pub fn with_http_client(self, client: Client) -> Self {
+        self.with_http_provider(Arc::new(StaticHttpClient::new(client)))
+    }
+
+    /// Inject a custom [`HttpProvider`] (the hot-reload entrypoint).
+    /// Use this when the caller wants the SDK to read a fresh
+    /// `reqwest::Client` per request — e.g. from a workload-SVID
+    /// refresh helper's ArcSwap. The trait's only method,
+    /// [`HttpProvider::client`], is invoked per outbound call.
+    pub fn with_http_provider(mut self, provider: Arc<dyn HttpProvider>) -> Self {
+        self.http = provider;
         self
     }
 
@@ -242,12 +254,12 @@ impl LedgerClient {
         &self.base_url
     }
 
-    /// Borrow the inner `reqwest::Client`. Same SSE-streaming
-    /// rationale as `base_url` — the SDK doesn't yet wrap streaming
-    /// responses, but we want a single shared HTTP client (connection
-    /// pool, TLS config) across SDK calls and ad-hoc streams.
-    pub fn http_client(&self) -> &Client {
-        &self.http
+    /// Snapshot the active `reqwest::Client`. Same SSE-streaming
+    /// rationale as `base_url`. Returns an `Arc<Client>` rather than a
+    /// borrow so a hot-reloading provider can hand out the current
+    /// credential without aliasing a stale reference into the caller.
+    pub fn http_client(&self) -> Arc<Client> {
+        self.http.client()
     }
 
     /// `GET /audit/correlation/{id}` — every chain entry sharing this
@@ -419,7 +431,8 @@ impl LedgerClient {
             .base_url
             .join(&path)
             .map_err(|e| WardenError::InvalidConfig(format!("join {path}: {e}")))?;
-        let mut req = self.http.post(endpoint);
+        let http = self.http.client();
+        let mut req = http.post(endpoint);
         if let Some(readme) = opts.readme {
             // text/markdown is the canonical content-type for `.md`
             // bodies (RFC 7763). The ledger accepts any `text/*`,
@@ -450,7 +463,7 @@ impl LedgerClient {
             .base_url
             .join(path)
             .map_err(|e| WardenError::InvalidConfig(format!("join {path}: {e}")))?;
-        let resp = self.http.get(endpoint).send().await?;
+        let resp = self.http.client().get(endpoint).send().await?;
         let status = resp.status();
         let raw = resp.text().await?;
         if status == StatusCode::OK {

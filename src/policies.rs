@@ -23,11 +23,13 @@
 //! grep `warden-policy-engine`, `warden-sdk`, `warden-console`, and
 //! `wardenctl` before any rename.
 
+use std::sync::Arc;
+
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 
 use crate::WardenError;
-use crate::http::{decode_response, parse_base_url, percent_encode};
+use crate::http::{default_provider, decode_response, parse_base_url, percent_encode, HttpProvider, StaticHttpClient};
 
 /// One row of the `policies` table — current state of a managed
 /// policy file.
@@ -152,7 +154,7 @@ pub struct DiffResponse {
 #[derive(Debug, Clone)]
 pub struct PoliciesClient {
     base_url: Url,
-    http: Client,
+    http: Arc<dyn HttpProvider>,
     bearer: Option<String>,
 }
 
@@ -160,7 +162,7 @@ impl PoliciesClient {
     /// Build a client against `base_url` (e.g. `http://localhost:8082`).
     pub fn new(base_url: impl AsRef<str>) -> Result<Self, WardenError> {
         let url = parse_base_url(base_url.as_ref())?;
-        let http = Client::builder().build().map_err(WardenError::Transport)?;
+        let http = default_provider()?;
         Ok(Self {
             base_url: url,
             http,
@@ -168,8 +170,14 @@ impl PoliciesClient {
         })
     }
 
-    pub fn with_http_client(mut self, client: Client) -> Self {
-        self.http = client;
+    pub fn with_http_client(self, client: Client) -> Self {
+        self.with_http_provider(Arc::new(StaticHttpClient::new(client)))
+    }
+
+    /// Inject a custom [`HttpProvider`] for hot-reloading credentials.
+    /// See [`LedgerClient::with_http_provider`] for the trade-offs.
+    pub fn with_http_provider(mut self, provider: Arc<dyn HttpProvider>) -> Self {
+        self.http = provider;
         self
     }
 
@@ -351,7 +359,7 @@ impl PoliciesClient {
         &self,
         url: Url,
     ) -> Result<T, WardenError> {
-        let mut req = self.http.get(url);
+        let mut req = self.http.client().get(url);
         if let Some(token) = self.bearer.as_ref() {
             req = req.bearer_auth(token);
         }
@@ -367,7 +375,7 @@ impl PoliciesClient {
         url: Url,
         body: &B,
     ) -> Result<T, WardenError> {
-        let mut req = self.http.request(method, url).json(body);
+        let mut req = self.http.client().request(method, url).json(body);
         if let Some(token) = self.bearer.as_ref() {
             req = req.bearer_auth(token);
         }

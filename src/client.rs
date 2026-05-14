@@ -9,6 +9,7 @@
 //! * [`WardenClient::send_jsonrpc`] — escape hatch for non-tool
 //!   methods (`tools/list`, etc.). Same return semantics.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use reqwest::{Client, StatusCode, Url};
@@ -16,7 +17,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::WardenError;
-use crate::http::parse_base_url;
+use crate::http::{default_provider, parse_base_url, HttpProvider, StaticHttpClient};
 
 /// Authentication mode for the proxy.
 ///
@@ -37,13 +38,13 @@ pub enum Auth {
 
 /// Async client for the proxy `POST /mcp` surface.
 ///
-/// Cheap to clone (the inner `reqwest::Client` is `Arc`-based).
+/// Cheap to clone — the inner `Arc<dyn HttpProvider>` is `Arc`-based.
 #[derive(Debug, Clone)]
 pub struct WardenClient {
     base_url: Url,
     auth: Auth,
-    http: Client,
-    next_id: std::sync::Arc<AtomicU64>,
+    http: Arc<dyn HttpProvider>,
+    next_id: Arc<AtomicU64>,
 }
 
 /// Two-step builder: validate the URL once, then attach optional
@@ -53,7 +54,7 @@ pub struct WardenClient {
 pub struct WardenClientBuilder {
     base_url: Url,
     auth: Auth,
-    http: Option<Client>,
+    http: Option<Arc<dyn HttpProvider>>,
 }
 
 impl WardenClient {
@@ -124,7 +125,7 @@ impl WardenClient {
             .join("mcp")
             .map_err(|e| WardenError::InvalidConfig(format!("join /mcp: {e}")))?;
 
-        let mut req = self.http.post(endpoint).json(&body);
+        let mut req = self.http.client().post(endpoint).json(&body);
         if let Auth::Bearer(token) = &self.auth {
             req = req.bearer_auth(token);
         }
@@ -154,24 +155,30 @@ impl WardenClientBuilder {
     /// want to set custom timeouts, proxies, or TLS roots; otherwise a
     /// default client is constructed at build time.
     pub fn http_client(mut self, client: Client) -> Self {
-        self.http = Some(client);
+        self.http = Some(Arc::new(StaticHttpClient::new(client)));
+        self
+    }
+
+    /// Inject a custom [`HttpProvider`] for hot-reloading credentials.
+    /// See [`crate::LedgerClient::with_http_provider`] for the
+    /// trade-offs against `http_client`.
+    pub fn http_provider(mut self, provider: Arc<dyn HttpProvider>) -> Self {
+        self.http = Some(provider);
         self
     }
 
     /// Construct the client. Builds a default `reqwest::Client` if
-    /// `http_client(...)` wasn't called.
+    /// neither `http_client(...)` nor `http_provider(...)` was called.
     pub fn build(self) -> Result<WardenClient, WardenError> {
         let http = match self.http {
-            Some(c) => c,
-            None => Client::builder()
-                .build()
-                .map_err(WardenError::Transport)?,
+            Some(p) => p,
+            None => default_provider()?,
         };
         Ok(WardenClient {
             base_url: self.base_url,
             auth: self.auth,
             http,
-            next_id: std::sync::Arc::new(AtomicU64::new(1)),
+            next_id: Arc::new(AtomicU64::new(1)),
         })
     }
 }

@@ -58,6 +58,7 @@ pub use agents::{
 };
 pub use client::{Auth, WardenClient, WardenClientBuilder};
 pub use error::WardenError;
+pub use http::{HttpProvider, StaticHttpClient};
 pub use ledger::{
     ExportRecord, LedgerClient, LedgerEntry, LifecycleRow, RegulatoryExportOptions, VerifyResult,
 };

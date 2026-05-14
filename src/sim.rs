@@ -17,11 +17,13 @@
 //! isolation (compose internal network) for access control. **Do not
 //! deploy this client against a production simulator.**
 
+use std::sync::Arc;
+
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 
 use crate::WardenError;
-use crate::http::{decode_response, parse_base_url};
+use crate::http::{default_provider, decode_response, parse_base_url, HttpProvider, StaticHttpClient};
 
 /// One row in the live agent roster — mirrors the simulator's
 /// internal `AgentRecord`. `transient=false` for the boot roster,
@@ -78,7 +80,7 @@ pub struct SimStatus {
 #[derive(Debug, Clone)]
 pub struct SimClient {
     base_url: Url,
-    http: Client,
+    http: Arc<dyn HttpProvider>,
 }
 
 impl SimClient {
@@ -87,15 +89,21 @@ impl SimClient {
     /// is malformed.
     pub fn new(base_url: impl AsRef<str>) -> Result<Self, WardenError> {
         let url = parse_base_url(base_url.as_ref())?;
-        let http = Client::builder().build().map_err(WardenError::Transport)?;
+        let http = default_provider()?;
         Ok(Self { base_url: url, http })
     }
 
     /// Inject a pre-configured `reqwest::Client`. Same use case as
     /// `WardenClientBuilder::http_client` — lets callers configure
     /// timeouts / proxy / TLS once and reuse.
-    pub fn with_http_client(mut self, client: Client) -> Self {
-        self.http = client;
+    pub fn with_http_client(self, client: Client) -> Self {
+        self.with_http_provider(Arc::new(StaticHttpClient::new(client)))
+    }
+
+    /// Inject a custom [`HttpProvider`] for hot-reloading credentials.
+    /// See [`LedgerClient::with_http_provider`] for the trade-offs.
+    pub fn with_http_provider(mut self, provider: Arc<dyn HttpProvider>) -> Self {
+        self.http = provider;
         self
     }
 
@@ -166,7 +174,7 @@ impl SimClient {
             .base_url
             .join(path)
             .map_err(|e| WardenError::InvalidConfig(format!("join {path}: {e}")))?;
-        let resp = self.http.get(endpoint).send().await?;
+        let resp = self.http.client().get(endpoint).send().await?;
         let status = resp.status();
         let body = resp.text().await?;
         decode_response(status, body)
@@ -181,7 +189,7 @@ impl SimClient {
             .base_url
             .join(path)
             .map_err(|e| WardenError::InvalidConfig(format!("join {path}: {e}")))?;
-        let resp = self.http.post(endpoint).json(body).send().await?;
+        let resp = self.http.client().post(endpoint).json(body).send().await?;
         let status = resp.status();
         let body = resp.text().await?;
         decode_response(status, body)

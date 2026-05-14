@@ -7,11 +7,69 @@
 //! its own dispatch because of the FORBIDDEN → `Veto` parse step;
 //! `LedgerClient` keeps its own because it predates this module and
 //! has no 401/400 surface to dispatch on.
+//!
+//! Also defines [`HttpProvider`] — the indirection point every per-service
+//! client uses to fetch its `reqwest::Client` per request. Static deployments
+//! wrap a single Client in [`StaticHttpClient`]; integrators with hot-reloading
+//! credentials (workload-SVID refresh, for example) implement the trait
+//! against their own ArcSwap-backed Client store. The trait keeps the SDK
+//! itself dependency-free of any specific refresh mechanism.
 
-use reqwest::StatusCode;
+use std::fmt::Debug;
+use std::sync::Arc;
+
+use reqwest::{Client, StatusCode};
 use url::Url;
 
 use crate::WardenError;
+
+/// Source of a `reqwest::Client` for a per-request hot path.
+///
+/// Implementors return the *current* client every call — never cache the
+/// `Arc<Client>` across requests, since the whole point is to let
+/// credential-rotation machinery swap out the underlying TLS identity
+/// between calls without disturbing in-flight requests (reqwest's
+/// connection pool retains the old identity for any connection that
+/// hasn't idled out).
+///
+/// Cost is one `Arc::clone` per call: cheap, no rebuild on hot path.
+pub trait HttpProvider: Debug + Send + Sync {
+    /// Snapshot of the active client. Callers do one network request per
+    /// returned `Arc<Client>`.
+    fn client(&self) -> Arc<Client>;
+}
+
+/// Wraps a single `reqwest::Client` so static deployments (no
+/// hot-reload) keep working through the [`HttpProvider`] indirection.
+///
+/// Built once at config time; `client()` is a `Arc::clone` of the
+/// stored `Arc<Client>`.
+#[derive(Debug, Clone)]
+pub struct StaticHttpClient {
+    inner: Arc<Client>,
+}
+
+impl StaticHttpClient {
+    /// Wrap a pre-built `reqwest::Client`. Use this when the caller owns
+    /// TLS / proxy / timeout config and isn't plumbing a credential
+    /// rotation system into the SDK.
+    pub fn new(client: Client) -> Self {
+        Self { inner: Arc::new(client) }
+    }
+}
+
+impl HttpProvider for StaticHttpClient {
+    fn client(&self) -> Arc<Client> {
+        Arc::clone(&self.inner)
+    }
+}
+
+/// Internal: build the default plain-HTTP `StaticHttpClient` for a
+/// per-service client's `new()` constructor.
+pub(crate) fn default_provider() -> Result<Arc<dyn HttpProvider>, WardenError> {
+    let client = Client::builder().build().map_err(WardenError::Transport)?;
+    Ok(Arc::new(StaticHttpClient::new(client)))
+}
 
 /// Parse a base URL and normalize it for use with `Url::join`.
 ///

@@ -25,11 +25,13 @@
 //! grep across `warden-identity`, `warden-sdk`, `warden-console`,
 //! `wardenctl` before any rename.
 
+use std::sync::Arc;
+
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 
 use crate::WardenError;
-use crate::http::{decode_response, parse_base_url, percent_encode};
+use crate::http::{default_provider, decode_response, parse_base_url, percent_encode, HttpProvider, StaticHttpClient};
 
 /// Agent lifecycle state per warden-specs/TECH_SPEC.md#agent-onboarding-wao §3.2. Wire form is the
 /// lowercased variant name (matches the server's `as_wire`).
@@ -223,7 +225,7 @@ fn same_set(a: &[String], b: &[String]) -> bool {
 #[derive(Debug, Clone)]
 pub struct AgentsClient {
     base_url: Url,
-    http: Client,
+    http: Arc<dyn HttpProvider>,
     /// Optional bearer to send on every request. `None` skips the
     /// header — used by tests and by callers that explicitly want the
     /// resulting 401 (e.g. capability-discovery probes).
@@ -235,7 +237,7 @@ impl AgentsClient {
     /// Returns `InvalidConfig` if the URL is malformed.
     pub fn new(base_url: impl AsRef<str>) -> Result<Self, WardenError> {
         let url = parse_base_url(base_url.as_ref())?;
-        let http = Client::builder().build().map_err(WardenError::Transport)?;
+        let http = default_provider()?;
         Ok(Self {
             base_url: url,
             http,
@@ -246,8 +248,14 @@ impl AgentsClient {
     /// Inject a pre-configured `reqwest::Client`. Same use case as
     /// `LedgerClient::with_http_client` — share the connection pool +
     /// TLS config across SDK clients.
-    pub fn with_http_client(mut self, client: Client) -> Self {
-        self.http = client;
+    pub fn with_http_client(self, client: Client) -> Self {
+        self.with_http_provider(Arc::new(StaticHttpClient::new(client)))
+    }
+
+    /// Inject a custom [`HttpProvider`] for hot-reloading credentials.
+    /// See [`LedgerClient::with_http_provider`] for the trade-offs.
+    pub fn with_http_provider(mut self, provider: Arc<dyn HttpProvider>) -> Self {
+        self.http = provider;
         self
     }
 
@@ -500,7 +508,7 @@ impl AgentsClient {
     /// 401 maps to `Unauthorized`; 400 to `BadRequest`; all other
     /// non-200s funnel through `Server`.
     async fn get_json<T: serde::de::DeserializeOwned>(&self, url: Url) -> Result<T, WardenError> {
-        let mut req = self.http.get(url);
+        let mut req = self.http.client().get(url);
         if let Some(token) = self.bearer.as_ref() {
             req = req.bearer_auth(token);
         }
@@ -520,7 +528,7 @@ impl AgentsClient {
         url: Url,
         body: &B,
     ) -> Result<T, WardenError> {
-        let mut req = self.http.post(url).json(body);
+        let mut req = self.http.client().post(url).json(body);
         if let Some(token) = self.bearer.as_ref() {
             req = req.bearer_auth(token);
         }
