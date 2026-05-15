@@ -313,6 +313,45 @@ impl LedgerClient {
         self.get_json(&path).await
     }
 
+    /// `GET /audit/{agent_id}?limit=N&before=S` — newest `N` rows
+    /// strictly older than seq `S`. Backs the console audit page's
+    /// forward seq-cursor pagination; stable across page navigation in
+    /// a way [`audit_agent_paged`]'s offset-based shape is not.
+    pub async fn audit_agent_paged_before(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        before_seq: i64,
+    ) -> Result<Vec<LedgerEntry>, WardenError> {
+        let path = format!(
+            "audit/{}?limit={}&before={}",
+            percent_encode(agent_id),
+            limit,
+            before_seq,
+        );
+        self.get_json(&path).await
+    }
+
+    /// `GET /audit/{agent_id}?limit=N&after=S` — oldest `N` rows
+    /// strictly newer than seq `S`, returned ASC so the caller can
+    /// merge with the same-shape slices from other agents and then
+    /// reverse to DESC for display. Backs backward seq-cursor
+    /// pagination ("newer" button on the console audit page).
+    pub async fn audit_agent_paged_after(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        after_seq: i64,
+    ) -> Result<Vec<LedgerEntry>, WardenError> {
+        let path = format!(
+            "audit/{}?limit={}&after={}",
+            percent_encode(agent_id),
+            limit,
+            after_seq,
+        );
+        self.get_json(&path).await
+    }
+
     /// `GET /audit/{agent_id}/count` — total chain rows naming
     /// `agent_id`. The console uses this with `audit_agent_paged` to
     /// compute total-pages without paying for the full row read. Cheap
