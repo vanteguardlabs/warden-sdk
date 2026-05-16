@@ -352,6 +352,64 @@ impl LedgerClient {
         self.get_json(&path).await
     }
 
+    /// `_since`-filtered companion to [`Self::audit_agent_paged`].
+    /// Adds `&since=<rfc3339>` so the wire response carries only rows
+    /// at or after the given instant — used by the console's
+    /// activity / velocity / stats panels to push the timestamp
+    /// window into SQL.
+    pub async fn audit_agent_paged_since(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        offset: usize,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<LedgerEntry>, WardenError> {
+        let path = format!(
+            "audit/{}?limit={}&offset={}&since={}",
+            percent_encode(agent_id),
+            limit,
+            offset,
+            percent_encode(&since.to_rfc3339()),
+        );
+        self.get_json(&path).await
+    }
+
+    /// `_since`-filtered companion to [`Self::audit_agent_paged_before`].
+    pub async fn audit_agent_paged_before_since(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        before_seq: i64,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<LedgerEntry>, WardenError> {
+        let path = format!(
+            "audit/{}?limit={}&before={}&since={}",
+            percent_encode(agent_id),
+            limit,
+            before_seq,
+            percent_encode(&since.to_rfc3339()),
+        );
+        self.get_json(&path).await
+    }
+
+    /// `_since`-filtered companion to [`Self::audit_agent_paged_after`].
+    pub async fn audit_agent_paged_after_since(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        after_seq: i64,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<LedgerEntry>, WardenError> {
+        let path = format!(
+            "audit/{}?limit={}&after={}&since={}",
+            percent_encode(agent_id),
+            limit,
+            after_seq,
+            percent_encode(&since.to_rfc3339()),
+        );
+        self.get_json(&path).await
+    }
+
     /// `GET /audit/{agent_id}/count` — total chain rows naming
     /// `agent_id`. The console uses this with `audit_agent_paged` to
     /// compute total-pages without paying for the full row read. Cheap
